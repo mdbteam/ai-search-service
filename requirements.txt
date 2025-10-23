@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+pyodbc
+python-jose[cryptography]
+google-generativeai

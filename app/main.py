@@ -1,8 +1,8 @@
-# app/main.py
+# ai-search-service/app/main.py
 import os
 import json
-from fastapi import FastAPI, Depends, HTTPException, status
-from typing import List, Optional, Dict, Any  # Añadir Dict, Any
+from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
+from typing import List, Optional, Dict, Any
 import pyodbc
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -11,11 +11,7 @@ from datetime import date
 load_dotenv(override=True)
 
 from app.database import get_db_connection
-# Asegúrate que el modelo ChatMessage esté definido así en models.py:
-# class ChatMessage(BaseModel):
-#    role: str
-#    parts: List[Dict[str, str]] # Lista de diccionarios {'text': 'mensaje'}
-from app.models import SearchQuery, SearchResponse, SearchFilters, UserInDB, ChatMessage
+from app.models import ChatbotQuery, ChatbotResponse, SearchFilters, UserInDB, ChatMessage
 from app.auth_utils import get_current_user_from_cookie_or_token
 
 app = FastAPI(
@@ -24,36 +20,29 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Creamos un router con el prefijo /api
+router = APIRouter(prefix="/api")
+
 # --- Google AI Configuration ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY: raise RuntimeError("GOOGLE_API_KEY no está configurada.")
 genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel('models/gemini-flash-latest')  # Modelo confirmado
+model = genai.GenerativeModel('models/gemini-flash-latest')
 
-# --- INSTRUCCIONES INICIALES (Separadas del prompt principal) ---
+# --- PROMPT MAESTRO (ACTUALIZADO PARA EL NUEVO FORMATO) ---
 SYSTEM_INSTRUCTIONS = """
-Eres el Asistente Chambee. Tu misión es ayudar a los usuarios a encontrar el profesional ideal en nuestra red de forma conversacional. Eres amable, servicial y profesional.
-Las categorías de servicio (oficios) disponibles son: Gasfitería, Electricidad, Carpintería, Pintura, Jardinería, Limpieza.
-Los filtros que puedes extraer son: 'oficio', 'genero' (hombre/mujer), 'puntuacion_minima' (1 a 5), 'min_trabajos_realizados', 'edad_minima', 'edad_maxima'.
+Eres el Asistente Chambee. Tu misión es ayudar a los usuarios a encontrar el profesional ideal.
+Tu respuesta DEBE ser un único bloque de CÓDIGO JSON válido usando siempre comillas dobles (").
+El JSON debe tener tres claves: "respuesta_texto" (string), "intent" (string, ej: 'buscar_prestador', 'aclarar_duda', 'emergencia', 'rechazo') y "data" (un objeto JSON con los filtros extraídos o {{}}).
 
-Tu respuesta DEBE ser un único bloque de CÓDIGO JSON válido. Utiliza **SIEMPRE comillas dobles (")** para TODAS las claves y TODOS los valores de tipo string dentro del JSON. NO uses comillas simples ('). El JSON debe tener exactamente dos claves: "respuesta_asistente" (string) y "filtros" (objeto JSON o {{}}).
+FILTROS DISPONIBLES: 'oficio' (Gasfitería, Electricidad, Carpintería, Pintura, Jardinería, Limpieza), 'genero' (hombre/mujer), 'puntuacion_minima', 'min_trabajos_realizados', 'edad_minima', 'edad_maxima'.
 
-EJEMPLO DE RESPUESTA JSON VÁLIDA:
-{
-  "respuesta_asistente": "¡Entendido! Buscando carpinteros con más de 4 estrellas...",
-  "filtros": {
-    "oficio": "Carpintería",
-    "puntuacion_minima": 4
-  }
-}
-
-REGLAS IMPORTANTES:
-1.  **Emergencias/Ilegal/Inapropiado:** Si aplica, RECHAZA amablemente, explica por qué y devuelve "filtros" como {{}}.
-2.  **Consultas Comunes:** Si es un problema común ("se cortó la luz", etc.), haz preguntas de diagnóstico ANTES de sugerir un oficio. Tu 'respuesta_asistente' debe ser la pregunta y "filtros" debe ser {{}}.
-3.  **Claridad:** Si es vago, PIDE ACLARACIÓN y devuelve "filtros" como {{}}.
-4.  **Extracción/Combinación:** Utiliza el historial para combinar filtros. Si el usuario añade un filtro a uno ya existente, combina ambos. Si cambia un filtro, usa el nuevo. Confirma la búsqueda con los filtros aplicados.
-5.  **Recomendaciones:** Si pide "el mejor", "recomendación", o "más de X estrellas", añade "puntuacion_minima" correspondiente.
-6.  **Contexto:** Utiliza el historial de la conversación si está disponible para entender mejor la solicitud actual.
+REGLAS:
+1.  **Emergencias/Ilegal/Inapropiado:** Responde apropiadamente, asigna el 'intent' (ej: 'emergencia') y devuelve "data" como {{}}.
+2.  **Consultas Comunes (Diagnóstico):** Si es un problema común, haz preguntas de diagnóstico. Asigna 'intent': 'aclarar_duda' y "data" como {{}}.
+3.  **Claridad:** Si es vago, PIDE ACLARACIÓN, asigna 'intent': 'aclarar_duda' y "data" como {{}}.
+4.  **Extracción/Combinación:** Si la solicitud es clara (o usa el historial), combina filtros. Asigna 'intent': 'buscar_prestador' y pon los filtros en "data". Confirma la búsqueda en "respuesta_texto".
+5.  **Recomendaciones:** Si pide "el mejor", añade 'puntuacion_minima': 4.
 
 Tu respuesta JSON (¡RECUERDA USAR SOLO COMILLAS DOBLES!"):
 """
@@ -66,89 +55,73 @@ def root():
     return {"message": "AI Search Service funcionando 🚀"}
 
 
-@app.post("/ai-search", response_model=SearchResponse, tags=["Búsqueda IA"])
-def ai_search(  # Síncrono
-        search_query: SearchQuery,
+# --- ENDPOINT RENOMBRADO Y ACTUALIZADO (Req 4.1) ---
+@router.post("/chatbot/query", response_model=ChatbotResponse, tags=["Chatbot"])
+def chatbot_query(
+        query_data: ChatbotQuery,
         conn: pyodbc.Connection = Depends(get_db_connection)
 ):
-    respuesta_asistente = "Lo siento, hubo un problema al procesar tu solicitud."
+    respuesta_asistente = "Lo siento, hubo un problema."
     filtros_dict = {}
     filtros = SearchFilters()
     resultados_finales = []
+    intent_detectado = "desconocido"
 
-    # --- CONSTRUCCIÓN DE CONTEXTO ORDENADO ---
+    # 1. Construir contexto
     gemini_contents = []
-    # 1. Si NO hay historial, enviamos las instrucciones iniciales
-    if not search_query.history:
+    if not query_data.history:
         gemini_contents.append({'role': 'user', 'parts': [{'text': SYSTEM_INSTRUCTIONS}]})
         gemini_contents.append({'role': 'model', 'parts': [{'text': "¡Entendido! ¿En qué puedo ayudarte hoy?"}]})
     else:
-        # 2. Si SÍ hay historial, lo añadimos
-        for msg in search_query.history:
-            # Aseguramos formato correcto parts: [{'text': ...}]
+        for msg in query_data.history:
             parts_formatted = [{'text': part.get('text', '')} for part in msg.parts if part.get('text')]
-            if parts_formatted:
-                gemini_contents.append({'role': msg.role, 'parts': parts_formatted})
+            if parts_formatted: gemini_contents.append({'role': msg.role, 'parts': parts_formatted})
+    gemini_contents.append({'role': 'user', 'parts': [{'text': query_data.mensaje}]})
 
-    # 3. Añadimos SIEMPRE la nueva consulta del usuario al final
-    gemini_contents.append({'role': 'user', 'parts': [{'text': search_query.query}]})
-    # --- FIN CONSTRUCCIÓN DE CONTEXTO ---
-
+    # 2. Llamar a Gemini
     try:
-        # 4. Llamada SÍNCRONA a Gemini con la secuencia completa
         response = model.generate_content(gemini_contents)
-
         raw_json_response = response.text.strip().replace('```json', '').replace('```', '')
         try:
             ai_response = json.loads(raw_json_response)
-            respuesta_asistente = ai_response.get("respuesta_asistente", "No pude procesar eso...")
-            filtros_dict = ai_response.get("filtros", {})
+            respuesta_asistente = ai_response.get("respuesta_texto", "No pude procesar eso...")
+            filtros_dict = ai_response.get("data", {})  # Leemos desde 'data'
+            intent_detectado = ai_response.get("intent", "buscar_prestador")  # Leemos 'intent'
             filtros = SearchFilters(**filtros_dict)
         except Exception as json_err:
-            print(f"Error parseando JSON: {json_err} - Respuesta: {raw_json_response}")
+            print(f"Error parseando JSON: {json_err} - Respuesta: {raw_json_response}");
             respuesta_asistente = "Tuve problemas interpretando la respuesta..."
-            filtros_dict = {}
-            filtros = SearchFilters()
+            filtros = SearchFilters();
+            filtros_dict = {};
+            intent_detectado = "error_parseo"
 
     except Exception as e:
-        print(f"Error llamando a Gemini API: {e}")
+        print(f"Error llamando a Gemini API: {e}");
         respuesta_asistente = "No pude contactar al asistente..."
-        filtros_dict = {}
-        filtros = SearchFilters()
-        # Construimos historial de error para devolver
-        final_history_error = []
-        if search_query.history:
-            for msg in search_query.history:
-                parts_dict = [{'text': part.get('text', '')} for part in msg.parts]
-                if parts_dict: final_history_error.append(ChatMessage(role=msg.role, parts=parts_dict))
-        final_history_error.append(ChatMessage(role="user", parts=[{'text': search_query.query}]))
-        final_history_error.append(ChatMessage(role="model", parts=[{'text': respuesta_asistente}]))
-        return SearchResponse(respuesta_asistente=respuesta_asistente, filtros_aplicados=filtros, resultados=[],
-                              history=final_history_error)
+        filtros = SearchFilters();
+        filtros_dict = {};
+        intent_detectado = "error_api"
 
-    # Construimos el historial final para devolver al frontend
+    # 3. Construir historial final
     final_history = []
-    # Empezamos con el historial que recibimos (si existe)
-    if search_query.history:
-        for msg in search_query.history:
-            # Aseguramos formato correcto parts: [{'text': ...}]
-            parts_dict = [{'text': part.get('text', '')} for part in msg.parts if part.get('text')]
+    if query_data.history:
+        for msg in query_data.history:
+            parts_dict = [{'text': part.get('text', '')} for part in msg.parts]
             if parts_dict: final_history.append(ChatMessage(role=msg.role, parts=parts_dict))
-    # Añadimos la última interacción
-    final_history.append(ChatMessage(role="user", parts=[{'text': search_query.query}]))
+    final_history.append(ChatMessage(role="user", parts=[{'text': query_data.mensaje}]))
     final_history.append(ChatMessage(role="model", parts=[{'text': respuesta_asistente}]))
 
-    # Si no hay filtros (error, aclaración, rechazo), devolvemos solo respuesta e historial actualizado
-    if not filtros_dict:
-        return SearchResponse(
-            respuesta_asistente=respuesta_asistente,
-            filtros_aplicados=filtros,
-            resultados=[],
-            history=final_history
+    # 4. Si no es para buscar, devolvemos ahora
+    if intent_detectado != 'buscar_prestador' or not filtros_dict:
+        return ChatbotResponse(
+            respuesta_texto=respuesta_asistente,
+            intent=intent_detectado,
+            data=filtros,
+            history=final_history,
+            resultados=[]  # Devolvemos resultados vacíos
         )
 
-    # 2. Búsqueda en Base de Datos
-    # ... (El código de la búsqueda SQL es el mismo que funcionaba con la CTE) ...
+    # 5. Búsqueda en BBDD (si el intent es 'buscar_prestador')
     sql_query = """
         WITH AvgValoraciones AS (SELECT id_evaluado, AVG(CAST(puntaje AS FLOAT)) AS puntuacion_promedio FROM Valoraciones WHERE rol_autor = 'cliente' GROUP BY id_evaluado)
         SELECT DISTINCT u.id_usuario, u.nombres, u.primer_apellido, u.foto_url, p.resumen_profesional,
@@ -185,26 +158,31 @@ def ai_search(  # Síncrono
                 {"id": str(row.id_usuario), "nombres": row.nombres, "primer_apellido": row.primer_apellido,
                  "foto_url": row.foto_url, "oficios": row.oficios.split(', ') if row.oficios else [],
                  "resumen": row.resumen_profesional, "puntuacion": round(row.puntuacion_promedio, 1)})
+
+        # Ajustamos la respuesta si no hubo resultados
         if not resultados_finales and filtros_dict:
             if filtros.oficio and len(filtros_dict) == 1:
                 respuesta_asistente = f"Entendido, necesitas '{filtros.oficio}'. De momento no encuentro a nadie, pero puedes explorar la categoría."
             else:
                 respuesta_asistente = "No encontré prestadores con esos criterios. ¿Probamos algo más general?"
-            final_history[-1] = ChatMessage(role="model",
-                                            parts=[{'text': respuesta_asistente}])  # Actualiza el último mensaje
+            final_history[-1] = ChatMessage(role="model", parts=[{'text': respuesta_asistente}])
 
     except pyodbc.Error as e:
-        print(f"Database Error during search: {e}")
+        print(f"Database Error during search: {e}");
         respuesta_asistente = "Ups, tuve un problema técnico buscando en la base de datos."
         resultados_finales = []
-        final_history[-1] = ChatMessage(role="model",
-                                        parts=[{'text': respuesta_asistente}])  # Actualiza el último mensaje
+        final_history[-1] = ChatMessage(role="model", parts=[{'text': respuesta_asistente}])
     finally:
         if cursor: cursor.close()
 
-    return SearchResponse(
-        respuesta_asistente=respuesta_asistente,
-        filtros_aplicados=filtros,
-        resultados=resultados_finales,
-        history=final_history  # Devolvemos el historial actualizado
+    return ChatbotResponse(
+        respuesta_texto=respuesta_asistente,
+        intent=intent_detectado,
+        data=filtros,
+        resultados=resultados_finales,  # Devolvemos los resultados aquí
+        history=final_history
     )
+
+
+# Incluimos el router en la app
+app.include_router(router)

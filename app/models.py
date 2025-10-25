@@ -1,20 +1,19 @@
-# app/models.py
+# ai-search-service/app/models.py
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-from datetime import date, datetime
+from datetime import date
 
-# Modelo para un mensaje en el historial del chat
+# --- MODELOS PARA EL CHATBOT (Req 4.1) ---
 class ChatMessage(BaseModel):
-    role: str # "user" o "model"
-    parts: List[Dict[str, str]] # Gemini espera una lista de diccionarios {'text': 'mensaje'}
+    role: str
+    parts: List[Dict[str, str]]
 
-# Modelo para la consulta del usuario, ahora con historial
-class SearchQuery(BaseModel):
-    query: str
-    history: Optional[List[ChatMessage]] = None # Historial opcional
+class ChatbotQuery(BaseModel):
+    session_id: Optional[str] = None
+    mensaje: str # Renombrado de query
+    history: Optional[List[ChatMessage]] = None
 
-# Modelo para los filtros extraídos por la IA
-class SearchFilters(BaseModel):
+class SearchFilters(BaseModel): # Los filtros extraídos
     oficio: Optional[str] = None
     genero: Optional[str] = None
     puntuacion_minima: Optional[int] = None
@@ -22,14 +21,16 @@ class SearchFilters(BaseModel):
     edad_minima: Optional[int] = None
     edad_maxima: Optional[int] = None
 
-# Modelo para la respuesta al frontend, ahora con historial
-class SearchResponse(BaseModel):
-    respuesta_asistente: str
-    filtros_aplicados: SearchFilters
-    resultados: List[dict] # Usamos dict por simplicidad
-    history: List[ChatMessage] # Historial actualizado
+class ChatbotResponse(BaseModel):
+    respuesta_texto: str
+    intent: Optional[str] = None
+    data: Optional[SearchFilters] = None # 'data' contendrá los filtros
+    # También incluimos los resultados de la búsqueda,
+    # para que el frontend no tenga que hacer 2 llamadas
+    resultados: List[dict] = []
+    history: List[ChatMessage]
 
-# Modelo interno para el usuario autenticado (si se requiere login)
+# --- MODELO INTERNO ---
 class UserInDB(BaseModel):
     id_usuario: int
     nombres: str
@@ -37,3 +38,4 @@ class UserInDB(BaseModel):
     correo: str
     id_rol: int
     estado: str
+    # ... (campos completos si se usa /users/me)

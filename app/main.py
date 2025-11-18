@@ -3,6 +3,7 @@ import os
 import json
 from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
 from typing import List, Optional, Dict, Any
+from fastapi.middleware.cors import CORSMiddleware
 import pyodbc
 from dotenv import load_dotenv
 import google.generativeai as genai

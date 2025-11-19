@@ -76,7 +76,7 @@ def root():
 
 
 # --- ENDPOINT RENOMBRADO Y ACTUALIZADO (Req 4.1) ---
-@router.post("/chatbot/query", response_model=ChatbotResponse, tags=["Chatbot"])
+@app.post("/chatbot/query", response_model=ChatbotResponse, tags=["Chatbot"])
 def chatbot_query(
         query_data: ChatbotQuery,
         conn: pyodbc.Connection = Depends(get_db_connection)
@@ -202,7 +202,3 @@ def chatbot_query(
         resultados=resultados_finales,  # Devolvemos los resultados aquí
         history=final_history
     )
-
-
-# Incluimos el router en la app
-app.include_router(router)

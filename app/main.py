@@ -69,7 +69,14 @@ def chatbot_query(
     gemini_contents = []
     if not query_data.history:
         gemini_contents.append({'role': 'user', 'parts': [{'text': SYSTEM_INSTRUCTIONS}]})
-        gemini_contents.append({'role': 'model', 'parts': [{'text': "¡Entendido! ¿En qué puedo ayudarte hoy?"}]})
+
+        # 🚨 CAMBIO CLAVE: El modelo debe responder con el JSON inicial
+        initial_json = json.dumps({
+            "respuesta_texto": "¡Hola! Soy el Asistente Chambee. Estoy listo. ¿Qué tipo de servicio buscas?",
+            "intent": "aclarar_duda",
+            "data": {}
+        })
+        gemini_contents.append({'role': 'model', 'parts': [{'text': initial_json}]})
     else:
         for msg in query_data.history:
             parts_formatted = [{'text': part.get('text', '')} for part in msg.parts if part.get('text')]

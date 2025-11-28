@@ -31,6 +31,7 @@ model = genai.GenerativeModel('models/gemini-flash-latest')
 SYSTEM_INSTRUCTIONS = """
 Eres el Asistente Chambee. Tu misión es ayudar a los usuarios a encontrar el profesional ideal.
 Tu respuesta DEBE ser un único bloque de CÓDIGO JSON válido usando siempre comillas dobles (").
+**NO** incluyas ninguna explicación, preámbulo o texto en Markdown fuera del bloque JSON. Solo el objeto JSON.
 El JSON debe tener tres claves: "respuesta_texto" (string), "intent" (string, ej: 'buscar_prestador', 'aclarar_duda', 'emergencia', 'rechazo') y "data" (un objeto JSON con los filtros extraídos o {{}}).
 
 FILTROS DISPONIBLES: 'oficio' (Gasfitería, Electricidad, Carpintería, Pintura, Jardinería, Limpieza), 'genero' (hombre/mujer), 'puntuacion_minima', 'min_trabajos_realizados', 'edad_minima', 'edad_maxima'.
@@ -53,7 +54,7 @@ def root():
     return {"message": "AI Search Service funcionando 🚀"}
 
 
-# --- ENDPOINT RENOMBRADO Y ACTUALIZADO (Req 4.1) ---
+# --- ENDPOINT CHATBOT (Público, solo requiere DB conn) ---
 @app.post("/chatbot/query", response_model=ChatbotResponse, tags=["Chatbot"])
 def chatbot_query(
         query_data: ChatbotQuery,
@@ -68,20 +69,29 @@ def chatbot_query(
     # 1. Construir contexto
     gemini_contents = []
     if not query_data.history:
+        # PRIMERA INTERACCIÓN: Añadimos el SYSTEM PROMPT y un EJEMPLO de RESPUESTA JSON
         gemini_contents.append({'role': 'user', 'parts': [{'text': SYSTEM_INSTRUCTIONS}]})
 
-        # 🚨 CAMBIO CLAVE: El modelo debe responder con el JSON inicial
+        # 🚨 CAMBIO CLAVE para forzar JSON: Proveer un ejemplo de respuesta
         initial_json = json.dumps({
-            "respuesta_texto": "¡Hola! Soy el Asistente Chambee. Estoy listo. ¿Qué tipo de servicio buscas?",
+            "respuesta_texto": "Soy el Asistente Chambee. ¿En qué te ayudo? (ej: 'Busco un gasfiter' o 'electricista').",
             "intent": "aclarar_duda",
             "data": {}
         })
         gemini_contents.append({'role': 'model', 'parts': [{'text': initial_json}]})
+
+        # 🚨 LO QUE FALTABA: Añadir el mensaje actual del usuario (ej: "hola")
+        # El mensaje del usuario siempre se añade al final
+
     else:
+        # INTERACCIONES POSTERIORES: Añadimos el historial
         for msg in query_data.history:
             parts_formatted = [{'text': part.get('text', '')} for part in msg.parts if part.get('text')]
             if parts_formatted: gemini_contents.append({'role': msg.role, 'parts': parts_formatted})
+
+    # Añadir el mensaje actual del usuario al contexto
     gemini_contents.append({'role': 'user', 'parts': [{'text': query_data.mensaje}]})
+
 
     # 2. Llamar a Gemini
     try:
@@ -93,9 +103,17 @@ def chatbot_query(
             filtros_dict = ai_response.get("data", {})  # Leemos desde 'data'
             intent_detectado = ai_response.get("intent", "buscar_prestador")  # Leemos 'intent'
             filtros = SearchFilters(**filtros_dict)
-        except Exception as json_err:
+
+        except json.JSONDecodeError as json_err:
             print(f"Error parseando JSON: {json_err} - Respuesta: {raw_json_response}");
-            respuesta_asistente = "Tuve problemas interpretando la respuesta..."
+            respuesta_asistente = "Tuve problemas interpretando la respuesta del asistente. Intenta con un oficio más claro (ej: 'pintor')."
+            filtros = SearchFilters();
+            filtros_dict = {};
+            intent_detectado = "error_parseo" # El frontend mostrará el mensaje de arriba
+
+        except Exception as general_err:
+            print(f"Error general en el parseo o Pydantic: {general_err} - Respuesta: {raw_json_response}");
+            respuesta_asistente = "Tuve problemas internos interpretando la respuesta..."
             filtros = SearchFilters();
             filtros_dict = {};
             intent_detectado = "error_parseo"
@@ -123,7 +141,7 @@ def chatbot_query(
             intent=intent_detectado,
             data=filtros,
             history=final_history,
-            resultados=[]  # Devolvemos resultados vacíos
+            resultados=[]
         )
 
     # 5. Búsqueda en BBDD (si el intent es 'buscar_prestador')
@@ -187,4 +205,3 @@ def chatbot_query(
         resultados=resultados_finales,  # Devolvemos los resultados aquí
         history=final_history
     )
-

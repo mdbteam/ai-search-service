@@ -68,28 +68,27 @@ def chatbot_query(
 
     # 1. Construir contexto
     gemini_contents = []
-    if not query_data.history:
-        # PRIMERA INTERACCIÓN: Añadimos el SYSTEM PROMPT y un EJEMPLO de RESPUESTA JSON
-        gemini_contents.append({'role': 'user', 'parts': [{'text': SYSTEM_INSTRUCTIONS}]})
 
-        # 🚨 CAMBIO CLAVE para forzar JSON: Proveer un ejemplo de respuesta
+    # El System Prompt debe ir PRIMERO para establecer las reglas del JSON
+    gemini_contents.append({'role': 'user', 'parts': [{'text': SYSTEM_INSTRUCTIONS}]})
+
+    # 🚨 LÓGICA DE CONTEXTO: Si el historial está vacío, le damos un EJEMPLO de RESPUESTA JSON
+    if not query_data.history:
+        # El mensaje de bienvenida del front se ignora. Damos el ejemplo de formato
         initial_json = json.dumps({
-            "respuesta_texto": "Soy el Asistente Chambee. ¿En qué te ayudo? (ej: 'Busco un gasfiter' o 'electricista').",
+            "respuesta_texto": "Soy el Asistente Chambee. ¿En qué te ayudo? (ej: 'Busco un electricista').",
             "intent": "aclarar_duda",
             "data": {}
         })
         gemini_contents.append({'role': 'model', 'parts': [{'text': initial_json}]})
 
-        # 🚨 LO QUE FALTABA: Añadir el mensaje actual del usuario (ej: "hola")
-        # El mensaje del usuario siempre se añade al final
-
-    else:
-        # INTERACCIONES POSTERIORES: Añadimos el historial
+    # 🚨 AÑADIR HISTORIAL EXISTENTE (si lo hay)
+    if query_data.history:
         for msg in query_data.history:
             parts_formatted = [{'text': part.get('text', '')} for part in msg.parts if part.get('text')]
             if parts_formatted: gemini_contents.append({'role': msg.role, 'parts': parts_formatted})
 
-    # Añadir el mensaje actual del usuario al contexto
+    # Añadir el mensaje actual del usuario al contexto (último turno)
     gemini_contents.append({'role': 'user', 'parts': [{'text': query_data.mensaje}]})
 
 

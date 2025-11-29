@@ -16,6 +16,8 @@ class ChatbotQuery(BaseModel):
 class SearchFilters(BaseModel): # Los filtros extraídos
     oficio: Optional[str] = None
     genero: Optional[str] = None
+    nombre: Optional[str] = None
+    apellido: Optional[str] = None
     puntuacion_minima: Optional[int] = None
     min_trabajos_realizados: Optional[int] = None
     edad_minima: Optional[int] = None
